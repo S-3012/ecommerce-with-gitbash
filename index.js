@@ -1,555 +1,239 @@
-import { options as _options } from 'preact';
-
-/** @type {number} */
-let currentIndex;
-
-/** @type {import('./internal').Component} */
-let currentComponent;
-
-/** @type {import('./internal').Component} */
-let previousComponent;
-
-/** @type {number} */
-let currentHook = 0;
-
-/** @type {Array<import('./internal').Component>} */
-let afterPaintEffects = [];
-
-// Cast to use internal Options type
-const options = /** @type {import('./internal').Options} */ (_options);
-
-let oldBeforeDiff = options._diff;
-let oldBeforeRender = options._render;
-let oldAfterDiff = options.diffed;
-let oldCommit = options._commit;
-let oldBeforeUnmount = options.unmount;
-let oldRoot = options._root;
-
-// We take the minimum timeout for requestAnimationFrame to ensure that
-// the callback is invoked after the next frame. 35ms is based on a 30hz
-// refresh rate, which is the minimum rate for a smooth user experience.
-const RAF_TIMEOUT = 35;
-let prevRaf;
-
-/** @type {(vnode: import('./internal').VNode) => void} */
-options._diff = vnode => {
-	currentComponent = null;
-	if (oldBeforeDiff) oldBeforeDiff(vnode);
-};
-
-options._root = (vnode, parentDom) => {
-	if (vnode && parentDom._children && parentDom._children._mask) {
-		vnode._mask = parentDom._children._mask;
-	}
-
-	if (oldRoot) oldRoot(vnode, parentDom);
-};
-
-/** @type {(vnode: import('./internal').VNode) => void} */
-options._render = vnode => {
-	if (oldBeforeRender) oldBeforeRender(vnode);
-
-	currentComponent = vnode._component;
-	currentIndex = 0;
-
-	const hooks = currentComponent.__hooks;
-	if (hooks) {
-		if (previousComponent === currentComponent) {
-			hooks._pendingEffects = [];
-			currentComponent._renderCallbacks = [];
-			hooks._list.some(hookItem => {
-				if (hookItem._nextValue) {
-					hookItem._value = hookItem._nextValue;
-				}
-				hookItem._pendingArgs = hookItem._nextValue = undefined;
-			});
-		} else {
-			hooks._pendingEffects.some(invokeCleanup);
-			hooks._pendingEffects.some(invokeEffect);
-			hooks._pendingEffects = [];
-			currentIndex = 0;
-		}
-	}
-	previousComponent = currentComponent;
-};
-
-/** @type {(vnode: import('./internal').VNode) => void} */
-options.diffed = vnode => {
-	if (oldAfterDiff) oldAfterDiff(vnode);
-
-	const c = vnode._component;
-	if (c && c.__hooks) {
-		if (c.__hooks._pendingEffects.length) afterPaint(afterPaintEffects.push(c));
-		c.__hooks._list.some(hookItem => {
-			if (hookItem._pendingArgs) {
-				hookItem._args = hookItem._pendingArgs;
-			}
-			hookItem._pendingArgs = undefined;
-		});
-	}
-	previousComponent = currentComponent = null;
-};
-
-// TODO: Improve typing of commitQueue parameter
-/** @type {(vnode: import('./internal').VNode, commitQueue: any) => void} */
-options._commit = (vnode, commitQueue) => {
-	commitQueue.some(component => {
-		try {
-			component._renderCallbacks.some(invokeCleanup);
-			component._renderCallbacks = component._renderCallbacks.filter(cb =>
-				cb._value ? invokeEffect(cb) : true
-			);
-		} catch (e) {
-			commitQueue.some(c => {
-				if (c._renderCallbacks) c._renderCallbacks = [];
-			});
-			commitQueue = [];
-			options._catchError(e, component._vnode);
-		}
-	});
-
-	if (oldCommit) oldCommit(vnode, commitQueue);
-};
-
-/** @type {(vnode: import('./internal').VNode) => void} */
-options.unmount = vnode => {
-	if (oldBeforeUnmount) oldBeforeUnmount(vnode);
-
-	const c = vnode._component;
-	if (c && c.__hooks) {
-		let hasErrored;
-		c.__hooks._list.some(s => {
-			try {
-				invokeCleanup(s);
-			} catch (e) {
-				hasErrored = e;
-			}
-		});
-		c.__hooks = undefined;
-		if (hasErrored) options._catchError(hasErrored, c._vnode);
-	}
-};
-
-/**
- * Get a hook's state from the currentComponent
- * @param {number} index The index of the hook to get
- * @param {number} type The index of the hook to get
- * @returns {any}
- */
-function getHookState(index, type) {
-	if (options._hook) {
-		options._hook(currentComponent, index, currentHook || type);
-	}
-	currentHook = 0;
-
-	// Largely inspired by:
-	// * https://github.com/michael-klein/funcy.js/blob/f6be73468e6ec46b0ff5aa3cc4c9baf72a29025a/src/hooks/core_hooks.mjs
-	// * https://github.com/michael-klein/funcy.js/blob/650beaa58c43c33a74820a3c98b3c7079cf2e333/src/renderer.mjs
-	// Other implementations to look at:
-	// * https://codesandbox.io/s/mnox05qp8
-	const hooks =
-		currentComponent.__hooks ||
-		(currentComponent.__hooks = {
-			_list: [],
-			_pendingEffects: []
-		});
-
-	if (index >= hooks._list.length) {
-		hooks._list.push({});
-	}
-
-	return hooks._list[index];
+"use strict";
+Object.defineProperty(exports, "__esModule", { value: true });
+exports.CommaAndColonSeparatedRecord = exports.ConnectionString = exports.redactConnectionString = void 0;
+const whatwg_url_1 = require("whatwg-url");
+const redact_1 = require("./redact");
+Object.defineProperty(exports, "redactConnectionString", { enumerable: true, get: function () { return redact_1.redactConnectionString; } });
+const DUMMY_HOSTNAME = '__this_is_a_placeholder__';
+function connectionStringHasValidScheme(connectionString) {
+    return connectionString.startsWith('mongodb://') || connectionString.startsWith('mongodb+srv://');
 }
-
-/**
- * @template {unknown} S
- * @param {import('./index').Dispatch<import('./index').StateUpdater<S>>} [initialState]
- * @returns {[S, (state: S) => void]}
- */
-export function useState(initialState) {
-	currentHook = 1;
-	return useReducer(invokeOrReturn, initialState);
+const HOSTS_REGEX = /^(?<protocol>[^/]+):\/\/(?:(?<username>[^:@]*)(?::(?<password>[^@]*))?@)?(?<hosts>(?!:)[^/?@]*)(?<rest>.*)/;
+class CaseInsensitiveMap extends Map {
+    delete(name) {
+        return super.delete(this._normalizeKey(name));
+    }
+    get(name) {
+        return super.get(this._normalizeKey(name));
+    }
+    has(name) {
+        return super.has(this._normalizeKey(name));
+    }
+    set(name, value) {
+        return super.set(this._normalizeKey(name), value);
+    }
+    _normalizeKey(name) {
+        name = `${name}`;
+        for (const key of this.keys()) {
+            if (key.toLowerCase() === name.toLowerCase()) {
+                name = key;
+                break;
+            }
+        }
+        return name;
+    }
 }
-
-/**
- * @template {unknown} S
- * @template {unknown} A
- * @param {import('./index').Reducer<S, A>} reducer
- * @param {import('./index').Dispatch<import('./index').StateUpdater<S>>} initialState
- * @param {(initialState: any) => void} [init]
- * @returns {[ S, (state: S) => void ]}
- */
-export function useReducer(reducer, initialState, init) {
-	/** @type {import('./internal').ReducerHookState} */
-	const hookState = getHookState(currentIndex++, 2);
-	hookState._reducer = reducer;
-	if (!hookState._component) {
-		hookState._value = [
-			!init ? invokeOrReturn(undefined, initialState) : init(initialState),
-
-			action => {
-				const currentValue = hookState._nextValue
-					? hookState._nextValue[0]
-					: hookState._value[0];
-				const nextValue = hookState._reducer(currentValue, action);
-
-				if (currentValue !== nextValue) {
-					hookState._nextValue = [nextValue, hookState._value[1]];
-					hookState._component.setState({});
-				}
-			}
-		];
-
-		hookState._component = currentComponent;
-
-		if (!currentComponent._hasScuFromHooks) {
-			currentComponent._hasScuFromHooks = true;
-			let prevScu = currentComponent.shouldComponentUpdate;
-			const prevCWU = currentComponent.componentWillUpdate;
-
-			// If we're dealing with a forced update `shouldComponentUpdate` will
-			// not be called. But we use that to update the hook values, so we
-			// need to call it.
-			currentComponent.componentWillUpdate = function (p, s, c) {
-				if (this._force) {
-					let tmp = prevScu;
-					// Clear to avoid other sCU hooks from being called
-					prevScu = undefined;
-					updateHookState(p, s, c);
-					prevScu = tmp;
-				}
-
-				if (prevCWU) prevCWU.call(this, p, s, c);
-			};
-
-			// This SCU has the purpose of bailing out after repeated updates
-			// to stateful hooks.
-			// we store the next value in _nextValue[0] and keep doing that for all
-			// state setters, if we have next states and
-			// all next states within a component end up being equal to their original state
-			// we are safe to bail out for this specific component.
-			/**
-			 *
-			 * @type {import('./internal').Component["shouldComponentUpdate"]}
-			 */
-			// @ts-ignore - We don't use TS to downtranspile
-			// eslint-disable-next-line no-inner-declarations
-			function updateHookState(p, s, c) {
-				if (!hookState._component.__hooks) return true;
-
-				const stateHooks = hookState._component.__hooks._list.filter(
-					x => x._component
-				);
-
-				const allHooksEmpty = stateHooks.every(x => !x._nextValue);
-				// When we have no updated hooks in the component we invoke the previous SCU or
-				// traverse the VDOM tree further.
-				if (allHooksEmpty) {
-					return prevScu ? prevScu.call(this, p, s, c) : true;
-				}
-
-				// We check whether we have components with a nextValue set that
-				// have values that aren't equal to one another this pushes
-				// us to update further down the tree
-				let shouldUpdate = hookState._component.props !== p;
-				stateHooks.some(hookItem => {
-					if (hookItem._nextValue) {
-						const currentValue = hookItem._value[0];
-						hookItem._value = hookItem._nextValue;
-						hookItem._nextValue = undefined;
-						if (currentValue !== hookItem._value[0]) shouldUpdate = true;
-					}
-				});
-
-				return prevScu
-					? prevScu.call(this, p, s, c) || shouldUpdate
-					: shouldUpdate;
-			}
-
-			currentComponent.shouldComponentUpdate = updateHookState;
-		}
-	}
-
-	return hookState._nextValue || hookState._value;
+function caseInsenstiveURLSearchParams(Ctor) {
+    return class CaseInsenstiveURLSearchParams extends Ctor {
+        append(name, value) {
+            return super.append(this._normalizeKey(name), value);
+        }
+        delete(name) {
+            return super.delete(this._normalizeKey(name));
+        }
+        get(name) {
+            return super.get(this._normalizeKey(name));
+        }
+        getAll(name) {
+            return super.getAll(this._normalizeKey(name));
+        }
+        has(name) {
+            return super.has(this._normalizeKey(name));
+        }
+        set(name, value) {
+            return super.set(this._normalizeKey(name), value);
+        }
+        keys() {
+            return super.keys();
+        }
+        values() {
+            return super.values();
+        }
+        entries() {
+            return super.entries();
+        }
+        [Symbol.iterator]() {
+            return super[Symbol.iterator]();
+        }
+        _normalizeKey(name) {
+            return CaseInsensitiveMap.prototype._normalizeKey.call(this, name);
+        }
+    };
 }
-
-/**
- * @param {import('./internal').Effect} callback
- * @param {unknown[]} args
- * @returns {void}
- */
-export function useEffect(callback, args) {
-	/** @type {import('./internal').EffectHookState} */
-	const state = getHookState(currentIndex++, 3);
-	if (!options._skipEffects && argsChanged(state._args, args)) {
-		state._value = callback;
-		state._pendingArgs = args;
-
-		currentComponent.__hooks._pendingEffects.push(state);
-	}
+class URLWithoutHost extends whatwg_url_1.URL {
 }
-
-/**
- * @param {import('./internal').Effect} callback
- * @param {unknown[]} args
- * @returns {void}
- */
-export function useLayoutEffect(callback, args) {
-	/** @type {import('./internal').EffectHookState} */
-	const state = getHookState(currentIndex++, 4);
-	if (!options._skipEffects && argsChanged(state._args, args)) {
-		state._value = callback;
-		state._pendingArgs = args;
-
-		currentComponent._renderCallbacks.push(state);
-	}
+class MongoParseError extends Error {
+    get name() {
+        return 'MongoParseError';
+    }
 }
-
-/** @type {(initialValue: unknown) => unknown} */
-export function useRef(initialValue) {
-	currentHook = 5;
-	return useMemo(() => ({ current: initialValue }), []);
+class ConnectionString extends URLWithoutHost {
+    _hosts;
+    constructor(uri, options = {}) {
+        const { looseValidation } = options;
+        if (!looseValidation && !connectionStringHasValidScheme(uri)) {
+            throw new MongoParseError('Invalid scheme, expected connection string to start with "mongodb://" or "mongodb+srv://"');
+        }
+        const match = uri.match(HOSTS_REGEX);
+        if (!match) {
+            throw new MongoParseError(`Invalid connection string "${uri}"`);
+        }
+        const { protocol, username, password, hosts, rest } = match.groups ?? {};
+        if (!looseValidation) {
+            if (!protocol || !hosts) {
+                throw new MongoParseError(`Protocol and host list are required in "${uri}"`);
+            }
+            try {
+                decodeURIComponent(username ?? '');
+                decodeURIComponent(password ?? '');
+            }
+            catch (err) {
+                throw new MongoParseError(err.message);
+            }
+            const illegalCharacters = /[:/?#[\]@]/gi;
+            if (username?.match(illegalCharacters)) {
+                throw new MongoParseError(`Username contains unescaped characters ${username}`);
+            }
+            if (!username || !password) {
+                const uriWithoutProtocol = uri.replace(`${protocol}://`, '');
+                if (uriWithoutProtocol.startsWith('@') || uriWithoutProtocol.startsWith(':')) {
+                    throw new MongoParseError('URI contained empty userinfo section');
+                }
+            }
+            if (password?.match(illegalCharacters)) {
+                throw new MongoParseError('Password contains unescaped characters');
+            }
+        }
+        let authString = '';
+        if (typeof username === 'string')
+            authString += username;
+        if (typeof password === 'string')
+            authString += `:${password}`;
+        if (authString)
+            authString += '@';
+        try {
+            super(`${protocol.toLowerCase()}://${authString}${DUMMY_HOSTNAME}${rest}`);
+        }
+        catch (err) {
+            if (looseValidation) {
+                new ConnectionString(uri, {
+                    ...options,
+                    looseValidation: false
+                });
+            }
+            if (typeof err.message === 'string') {
+                err.message = err.message.replace(DUMMY_HOSTNAME, hosts);
+            }
+            throw err;
+        }
+        this._hosts = hosts.split(',');
+        if (!looseValidation) {
+            if (this.isSRV && this.hosts.length !== 1) {
+                throw new MongoParseError('mongodb+srv URI cannot have multiple service names');
+            }
+            if (this.isSRV && this.hosts.some(host => host.includes(':'))) {
+                throw new MongoParseError('mongodb+srv URI cannot have port number');
+            }
+        }
+        if (!this.pathname) {
+            this.pathname = '/';
+        }
+        Object.setPrototypeOf(this.searchParams, caseInsenstiveURLSearchParams(this.searchParams.constructor).prototype);
+    }
+    get host() {
+        return DUMMY_HOSTNAME;
+    }
+    set host(_ignored) {
+        throw new Error('No single host for connection string');
+    }
+    get hostname() {
+        return DUMMY_HOSTNAME;
+    }
+    set hostname(_ignored) {
+        throw new Error('No single host for connection string');
+    }
+    get port() {
+        return '';
+    }
+    set port(_ignored) {
+        throw new Error('No single host for connection string');
+    }
+    get href() {
+        return this.toString();
+    }
+    set href(_ignored) {
+        throw new Error('Cannot set href for connection strings');
+    }
+    get isSRV() {
+        return this.protocol.includes('srv');
+    }
+    get hosts() {
+        return this._hosts;
+    }
+    set hosts(list) {
+        this._hosts = list;
+    }
+    toString() {
+        return super.toString().replace(DUMMY_HOSTNAME, this.hosts.join(','));
+    }
+    clone() {
+        return new ConnectionString(this.toString(), {
+            looseValidation: true
+        });
+    }
+    redact(options) {
+        return (0, redact_1.redactValidConnectionString)(this, options);
+    }
+    typedSearchParams() {
+        const _sametype = false && new (caseInsenstiveURLSearchParams(whatwg_url_1.URLSearchParams))();
+        return this.searchParams;
+    }
+    [Symbol.for('nodejs.util.inspect.custom')]() {
+        const { href, origin, protocol, username, password, hosts, pathname, search, searchParams, hash } = this;
+        return {
+            href,
+            origin,
+            protocol,
+            username,
+            password,
+            hosts,
+            pathname,
+            search,
+            searchParams,
+            hash
+        };
+    }
 }
-
-/**
- * @param {object} ref
- * @param {() => object} createHandle
- * @param {unknown[]} args
- * @returns {void}
- */
-export function useImperativeHandle(ref, createHandle, args) {
-	currentHook = 6;
-	useLayoutEffect(
-		() => {
-			if (typeof ref == 'function') {
-				const result = ref(createHandle());
-				return () => {
-					ref(null);
-					if (result && typeof result == 'function') result();
-				};
-			} else if (ref) {
-				ref.current = createHandle();
-				return () => (ref.current = null);
-			}
-		},
-		args == null ? args : args.concat(ref)
-	);
+exports.ConnectionString = ConnectionString;
+class CommaAndColonSeparatedRecord extends CaseInsensitiveMap {
+    constructor(from) {
+        super();
+        for (const entry of (from ?? '').split(',')) {
+            if (!entry)
+                continue;
+            const colonIndex = entry.indexOf(':');
+            if (colonIndex === -1) {
+                this.set(entry, '');
+            }
+            else {
+                this.set(entry.slice(0, colonIndex), entry.slice(colonIndex + 1));
+            }
+        }
+    }
+    toString() {
+        return [...this].map(entry => entry.join(':')).join(',');
+    }
 }
-
-/**
- * @template {unknown} T
- * @param {() => T} factory
- * @param {unknown[]} args
- * @returns {T}
- */
-export function useMemo(factory, args) {
-	/** @type {import('./internal').MemoHookState<T>} */
-	const state = getHookState(currentIndex++, 7);
-	if (argsChanged(state._args, args)) {
-		state._value = factory();
-		state._args = args;
-		state._factory = factory;
-	}
-
-	return state._value;
-}
-
-/**
- * @param {() => void} callback
- * @param {unknown[]} args
- * @returns {() => void}
- */
-export function useCallback(callback, args) {
-	currentHook = 8;
-	return useMemo(() => callback, args);
-}
-
-/**
- * @param {import('./internal').PreactContext} context
- */
-export function useContext(context) {
-	const provider = currentComponent.context[context._id];
-	// We could skip this call here, but than we'd not call
-	// `options._hook`. We need to do that in order to make
-	// the devtools aware of this hook.
-	/** @type {import('./internal').ContextHookState} */
-	const state = getHookState(currentIndex++, 9);
-	// The devtools needs access to the context object to
-	// be able to pull of the default value when no provider
-	// is present in the tree.
-	state._context = context;
-	if (!provider) return context._defaultValue;
-	// This is probably not safe to convert to "!"
-	if (state._value == null) {
-		state._value = true;
-		provider.sub(currentComponent);
-	}
-	return provider.props.value;
-}
-
-/**
- * Display a custom label for a custom hook for the devtools panel
- * @type {<T>(value: T, cb?: (value: T) => string | number) => void}
- */
-export function useDebugValue(value, formatter) {
-	if (options.useDebugValue) {
-		options.useDebugValue(
-			formatter ? formatter(value) : /** @type {any}*/ (value)
-		);
-	}
-}
-
-/**
- * @param {(error: unknown, errorInfo: import('preact').ErrorInfo) => void} cb
- * @returns {[unknown, () => void]}
- */
-export function useErrorBoundary(cb) {
-	/** @type {import('./internal').ErrorBoundaryHookState} */
-	const state = getHookState(currentIndex++, 10);
-	const errState = useState();
-	state._value = cb;
-	if (!currentComponent.componentDidCatch) {
-		currentComponent.componentDidCatch = (err, errorInfo) => {
-			if (state._value) state._value(err, errorInfo);
-			errState[1](err);
-		};
-	}
-	return [
-		errState[0],
-		() => {
-			errState[1](undefined);
-		}
-	];
-}
-
-/** @type {() => string} */
-export function useId() {
-	/** @type {import('./internal').IdHookState} */
-	const state = getHookState(currentIndex++, 11);
-	if (!state._value) {
-		// Grab either the root node or the nearest async boundary node.
-		/** @type {import('./internal').VNode} */
-		let root = currentComponent._vnode;
-		while (root !== null && !root._mask && root._parent !== null) {
-			root = root._parent;
-		}
-
-		let mask = root._mask || (root._mask = [0, 0]);
-		state._value = 'P' + mask[0] + '-' + mask[1]++;
-	}
-
-	return state._value;
-}
-
-/**
- * After paint effects consumer.
- */
-function flushAfterPaintEffects() {
-	let component;
-	while ((component = afterPaintEffects.shift())) {
-		const hooks = component.__hooks;
-		if (!component._parentDom || !hooks) continue;
-		try {
-			hooks._pendingEffects.some(invokeCleanup);
-			hooks._pendingEffects.some(invokeEffect);
-			hooks._pendingEffects = [];
-		} catch (e) {
-			hooks._pendingEffects = [];
-			options._catchError(e, component._vnode);
-		}
-	}
-}
-
-let HAS_RAF = typeof requestAnimationFrame == 'function';
-
-/**
- * Schedule a callback to be invoked after the browser has a chance to paint a new frame.
- * Do this by combining requestAnimationFrame (rAF) + setTimeout to invoke a callback after
- * the next browser frame.
- *
- * Also, schedule a timeout in parallel to the the rAF to ensure the callback is invoked
- * even if RAF doesn't fire (for example if the browser tab is not visible)
- *
- * @param {() => void} callback
- */
-function afterNextFrame(callback) {
-	const done = () => {
-		clearTimeout(timeout);
-		if (HAS_RAF) cancelAnimationFrame(raf);
-		setTimeout(callback);
-	};
-	const timeout = setTimeout(done, RAF_TIMEOUT);
-
-	let raf;
-	if (HAS_RAF) {
-		raf = requestAnimationFrame(done);
-	}
-}
-
-// Note: if someone used options.debounceRendering = requestAnimationFrame,
-// then effects will ALWAYS run on the NEXT frame instead of the current one, incurring a ~16ms delay.
-// Perhaps this is not such a big deal.
-/**
- * Schedule afterPaintEffects flush after the browser paints
- * @param {number} newQueueLength
- * @returns {void}
- */
-function afterPaint(newQueueLength) {
-	if (newQueueLength === 1 || prevRaf !== options.requestAnimationFrame) {
-		prevRaf = options.requestAnimationFrame;
-		(prevRaf || afterNextFrame)(flushAfterPaintEffects);
-	}
-}
-
-/**
- * @param {import('./internal').HookState} hook
- * @returns {void}
- */
-function invokeCleanup(hook) {
-	// A hook cleanup can introduce a call to render which creates a new root, this will call options.vnode
-	// and move the currentComponent away.
-	const comp = currentComponent;
-	let cleanup = hook._cleanup;
-	if (typeof cleanup == 'function') {
-		hook._cleanup = undefined;
-		cleanup();
-	}
-
-	currentComponent = comp;
-}
-
-/**
- * Invoke a Hook's effect
- * @param {import('./internal').EffectHookState} hook
- * @returns {void}
- */
-function invokeEffect(hook) {
-	// A hook call can introduce a call to render which creates a new root, this will call options.vnode
-	// and move the currentComponent away.
-	const comp = currentComponent;
-	hook._cleanup = hook._value();
-	currentComponent = comp;
-}
-
-/**
- * @param {unknown[]} oldArgs
- * @param {unknown[]} newArgs
- * @returns {boolean}
- */
-function argsChanged(oldArgs, newArgs) {
-	return (
-		!oldArgs ||
-		oldArgs.length !== newArgs.length ||
-		newArgs.some((arg, index) => arg !== oldArgs[index])
-	);
-}
-
-/**
- * @template Arg
- * @param {Arg} arg
- * @param {(arg: Arg) => any} f
- * @returns {any}
- */
-function invokeOrReturn(arg, f) {
-	return typeof f == 'function' ? f(arg) : f;
-}
+exports.CommaAndColonSeparatedRecord = CommaAndColonSeparatedRecord;
+exports.default = ConnectionString;
+//# sourceMappingURL=index.js.map
